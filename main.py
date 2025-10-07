@@ -19,7 +19,7 @@ from flask import Flask, request, jsonify, render_template_string
 # 環境変数をロード
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-DATABASE_FILE = '/data/ip_auth.db' 
+DATABASE_FILE = '/data/ip_auth.db'
 
 # ==============================================================================
 # データベースと認証コード管理
