@@ -18,13 +18,16 @@ from flask import Flask, request, jsonify, render_template_string
 # 環境変数をロード
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-DATABASE_FILE = '/data/ip_auth.db'
+
+# 💡 修正箇所：Renderのエフェメラル環境に対応するため、相対パスに変更
+DATABASE_FILE = 'ip_auth.db'
 
 # ==============================================================================
 # データベースと認証コード管理
 # ==============================================================================
 def init_db():
     """データベースの初期化とテーブルの作成"""
+    # 相対パスになったことで、Renderで書き込みが可能になります
     with sqlite3.connect(DATABASE_FILE) as conn:
         cursor = conn.cursor()
         # 認証データ（IPアドレス、認証ID、認証状態、有効期限）
@@ -526,7 +529,7 @@ AUTHENTICATED_CONTENT_HTML = """
             <div id="auth-content-card">
               <h2>✅ 認証成功！ようこそ！</h2>
               <p style="margin-top: 10px;">このページが**更新版のコンテンツ**です。</p>
-              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効です。期限が切れたら再度承認が必要です。）</p>
+              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効ですが、サーバーが再起動するとリセットされます。リセットされたら再度承認が必要です。）</p>
             </div>
           </center>
 """
@@ -684,10 +687,13 @@ class MyBot(commands.Bot):
 
 def run_flask_server():
     """Flaskサーバーを別スレッドで起動"""
-    print("Starting Flask server on http://0.0.0.0:8000")
-    # host='0.0.0.0' で外部からのアクセスを許可
+    # Renderは環境変数PORTを提供するため、それを使用
+    port = int(os.environ.get('PORT', 8000)) 
+    print(f"Starting Flask server on http://0.0.0.0:{port}")
     try:
-        app.run(host='0.0.0.0', port=8000) 
+        # Flaskサーバーを起動
+        # debug=Falseに設定し、Production環境向けに
+        app.run(host='0.0.0.0', port=port, debug=False) 
     except Exception as e:
         print(f"Flask server error: {e}")
 
