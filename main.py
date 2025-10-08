@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 # Discord
 import discord
 from discord.ext import commands
-from discord import app_commands, Embed, Interaction
+from discord import app_commands, Embed, Interaction, ui, ButtonStyle
 
 # Flask
-# render_template_string を使用してHTMLを直接レンダリングします
 from flask import Flask, request, jsonify, render_template_string
 
 # 環境変数をロード
@@ -182,34 +181,37 @@ AUTH_HTML_TEMPLATE = """
       #authenticated-content { display: none; width: 100%; height: 100vh; position: fixed; top: 0; left: 0; z-index: 100; background-color: var(--bg-color); }
 
       .container {
-        width: 100%; max-width: 330px; /* ★h5gg対応コンパクト化 */
-        margin: 10px; padding: 20px 18px; /* ★パディング圧縮 */
+        width: 100%; max-width: 350px; /* 少し大きく */
+        margin: 10px; padding: 25px 20px; /* パディング調整 */
         background: var(--card-bg); backdrop-filter: var(--card-backdrop);
         border-radius: var(--radius); position: relative; text-align: center;
         box-shadow: 0 10px 40px var(--shadow-color), 0 1px 0 rgba(255,255,255,0.6) inset;
         animation: popIn .6s cubic-bezier(.175,.885,.32,1.275) forwards; opacity: 0;
       }
-      .illustration-wrapper { margin-bottom: 0.5rem; opacity: 0; min-height: 60px; }
+      .illustration-wrapper { margin-bottom: 0.8rem; opacity: 0; min-height: 60px; }
       .success-icon, .error-icon { width: 60px; height: 60px; }
       
       /* ====== Text / Steps ====== */
-      .title { font-size: 1.25rem; margin: 0 0 .3rem; opacity: 0; font-weight: 800; }
-      .divider { height: 1px; width: 80%; margin: 6px auto 12px; background: var(--border-color); opacity: .5; }
-      .message { font-size: 0.9rem; line-height: 1.5; margin: 0; }
-      .auth-step { padding: 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid var(--border-color); text-align: left; }
-      .step-title { font-weight: 700; font-size: 0.95rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-      .message-small { font-size: 0.8rem; line-height: 1.3; margin: 0; color: var(--secondary-text); }
+      .title { font-size: 1.4rem; margin: 0 0 .5rem; opacity: 0; font-weight: 800; color: var(--accent-color); /* タイトル色を強調 */ }
+      .divider { height: 1px; width: 90%; margin: 8px auto 16px; background: var(--border-color); opacity: 1; }
+      .message { font-size: 0.95rem; line-height: 1.6; margin: 0; }
+      .auth-step { padding: 12px; border-radius: 10px; margin-bottom: 12px; border: 2px solid var(--border-color); text-align: left; background: rgba(255,255,255,0.4); /* 背景追加 */ }
+      .step-title { font-weight: 800; font-size: 1.05rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; color: var(--primary-text); }
+      .message-small { font-size: 0.85rem; line-height: 1.4; margin: 0; color: var(--secondary-text); }
       #generated-id {
-          font-family: 'Consolas', monospace; font-size: 1rem; font-weight: bold; color: var(--accent-color);
-          background: rgba(0, 0, 0, 0.2); display: block; padding: 6px; border-radius: 4px; text-align: center;
-          letter-spacing: 1px; margin-bottom: 8px;
+          font-family: 'Consolas', monospace; font-size: 1.2rem; font-weight: bold; color: var(--accent-color);
+          background: rgba(0, 0, 0, 0.05); display: block; padding: 8px; border-radius: 6px; text-align: center;
+          letter-spacing: 2px; margin-bottom: 10px; border: 1px dashed var(--accent-color);
       }
       .step-button { 
-          padding: 6px 14px; font-size: 0.85rem; border-radius: 4px; width: 100%; 
-          border: none; background-color: var(--button-bg); color: #fff; cursor: pointer;
+          padding: 8px 16px; font-size: 0.9rem; border-radius: 6px; width: 100%; 
+          border: none; background-color: var(--button-bg); color: #fff; cursor: pointer; font-weight: 700;
+          transition: background-color 0.2s ease;
       }
-      .step-button:hover:not(:disabled) { background-color: var(--button-hover-bg); }
+      .step-button:hover:not(:disabled) { background-color: var(--button-hover-bg); transform: translateY(-1px); }
       .step-button:disabled { background-color: #6c757d; cursor: not-allowed; opacity: 0.7; }
+      #auth-message { margin-top: 15px; font-weight: 700; color: var(--primary-text); }
+
 
       /* ====== Footer / Theme Switch ====== */
       .page-footer { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: .75rem; }
@@ -236,7 +238,7 @@ AUTH_HTML_TEMPLATE = """
   <body>
     <main class="container" id="auth-screen">
       <div class="illustration-wrapper" id="icon-wrapper"></div>
-      <h1 class="title" id="auth-title">IPアドレス認証が必要です</h1>
+      <h1 class="title" id="auth-title">IPアドレス認証が必要です 🔐</h1>
       <div class="divider" aria-hidden="true"></div>
 
       <div id="dynamic-flow">
@@ -259,8 +261,8 @@ AUTH_HTML_TEMPLATE = """
             <span id="auth-status">未完了</span>
           </div>
           <p class="message-small">
-            [こちら](https://discord.gg/ZuEvp5PKWA)のDiscordチャンネルで、<br />
-            **/認証コード承認** コマンドを使用してください。
+            このコードをコピーし、Discordチャンネルで<br />
+            **/認証コード承認** コマンドを実行し、**「認証コード入力」ボタン**からコードを入力してください。
           </p>
         </div>
       </div>
@@ -329,7 +331,7 @@ AUTH_HTML_TEMPLATE = """
           if (data.auth_id) {
             idSpan.textContent = data.auth_id;
             idSpan.dataset.code = data.auth_id;
-            document.getElementById("id-status").textContent = "✅ 発行済";
+            document.getElementById("id-status").textContent = "✅ 発行済 (5分間有効)";
             copyButton.disabled = false;
           } else {
             idSpan.textContent = "発行失敗";
@@ -428,7 +430,7 @@ AUTH_HTML_TEMPLATE = """
             authScreen.style.display = "block";
             authContent.style.display = "none";
             
-            authTitle.textContent = "IPアドレス認証が必要です";
+            authTitle.textContent = "IPアドレス認証が必要です 🔐";
             authMessage.textContent = "Discordでの承認をお待ちください。";
             document.getElementById("dynamic-flow").style.display = "block";
             iconWrapper.innerHTML = '';
@@ -437,7 +439,7 @@ AUTH_HTML_TEMPLATE = """
             // 認証コードが未発行/期限切れの場合は再発行を試みる
             if (
               !document.getElementById("generated-id").dataset.code ||
-              document.getElementById("id-status").textContent === "❌ 失敗"
+              document.getElementById("id-status").textContent.includes("失敗")
             ) {
               generateAuthId();
             }
@@ -511,19 +513,20 @@ AUTH_HTML_TEMPLATE = """
 AUTHENTICATED_CONTENT_HTML = """
           <style>
             #auth-content-card {
-              width: 90%; max-width: 320px; padding: 20px; margin-top: 50px;
-              background: rgba(255, 255, 255, 0.9); border-radius: 20px; 
+              width: 90%; max-width: 350px; padding: 25px; margin-top: 50px;
+              background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(5px); border-radius: 20px; 
               text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.1);
               color: #1b1f24;
+              border: 1px solid rgba(0,0,0,0.1);
             }
-            #auth-content-card h2 { font-size: 1.4rem; color: #0d6efd; margin-bottom: 0.5rem; }
-            #auth-content-card p { font-size: 0.9rem; margin: 0; }
+            #auth-content-card h2 { font-size: 1.6rem; color: #0d6efd; margin-bottom: 0.5rem; font-weight: 800;}
+            #auth-content-card p { font-size: 1.0rem; margin: 0; line-height: 1.5;}
           </style>
           <center>
             <div id="auth-content-card">
               <h2>✅ 認証成功！ようこそ！</h2>
-              <p>このページが**更新版のコンテンツ**です。</p>
-              <p>（この認証は7日間有効です。）</p>
+              <p style="margin-top: 10px;">このページが**更新版のコンテンツ**です。</p>
+              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効です。期限が切れたら再度承認が必要です。）</p>
             </div>
           </center>
 """
@@ -540,7 +543,8 @@ def index():
 @app.route('/generate_id', methods=['GET'])
 def api_generate_id():
     """認証コードを生成し、IPを登録"""
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+    # Heroku/Renderなどのプロキシ環境を考慮してX-Forwarded-Forを優先
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
     if check_auth_status(ip_address):
         return jsonify({"status": "authenticated"}), 200
 
@@ -553,14 +557,14 @@ def api_generate_id():
 @app.route('/check_auth', methods=['GET'])
 def api_check_auth():
     """認証状態をチェック"""
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
     authenticated = check_auth_status(ip_address)
     return jsonify({"authenticated": authenticated}), 200
 
 @app.route('/authenticated_content', methods=['GET'])
 def api_authenticated_content():
     """認証成功時に表示するコンテンツ (更新版のあれ)"""
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
     
     # 認証済みの場合のみコンテンツを返す
     if check_auth_status(ip_address):
@@ -573,6 +577,63 @@ def api_authenticated_content():
 # Discord Bot 設定
 # ==============================================================================
 
+# 認証コード入力用モーダルフォーム
+class AuthCodeModal(ui.Modal, title="認証コード承認"):
+    """ユーザーから認証コードを受け取るためのモーダル"""
+    code_input = ui.TextInput(
+        label="認証コードを入力してください",
+        placeholder="ウェブページに表示されている6桁のコード (例: A1B2C3)",
+        style=discord.TextStyle.short,
+        min_length=6,
+        max_length=6,
+        required=True
+    )
+    
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    async def on_submit(self, interaction: Interaction):
+        code = self.code_input.value.upper() # コードを大文字に変換
+        ip_address = approve_ip_by_id(code)
+        
+        if ip_address:
+            # 成功メッセージ
+            embed = Embed(
+                title="✅ IPアドレス認証が完了しました",
+                description=f"コード `{code}` を持つIPアドレス (`{ip_address}`) の認証を承認しました。\nユーザーのウェブページが自動的に切り替わります。",
+                color=discord.Color.green()
+            )
+            embed.set_footer(text=f"実行者: {interaction.user.display_name} ({interaction.user.id})")
+            
+            # ログチャンネルへの通知
+            log_channel_id = get_setting('log_channel_id')
+            if log_channel_id:
+                try:
+                    log_channel = self.bot.get_channel(int(log_channel_id))
+                    if log_channel:
+                        await log_channel.send(embed=embed)
+                except Exception:
+                    pass # ログ送信失敗は無視
+
+            await interaction.response.send_message("✅ 認証が完了しました。ユーザーの画面が切り替わります。", ephemeral=True)
+        else:
+            # 失敗メッセージ
+            await interaction.response.send_message("❌ 無効な認証コードです。コードを再確認するか、ユーザーに再発行させてください。", ephemeral=True)
+
+
+# 認証コード入力ボタンを持つView
+class AuthCodeView(ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @ui.button(label="認証コード入力", style=ButtonStyle.primary, custom_id="persistent_auth_code_button")
+    async def approve_button(self, interaction: Interaction, button: ui.Button):
+        """ボタンが押されたらモーダルを表示"""
+        await interaction.response.send_modal(AuthCodeModal(self.bot))
+
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -582,8 +643,11 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         # コマンドツリーの登録
         self.tree.add_command(self.set_log_channel)
-        self.tree.add_command(self.approve_code)
+        self.tree.add_command(self.approve_code_slash)
         await self.tree.sync() # スラッシュコマンドを同期
+        
+        # 永続Viewの追加
+        self.add_view(AuthCodeView(self))
 
     async def on_ready(self):
         print(f'Logged in as {self.user} (ID: {self.user.id})')
@@ -594,37 +658,24 @@ class MyBot(commands.Bot):
     @app_commands.command(name="bot設定", description="認証ログチャンネルを設定します。")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_log_channel(self, interaction: Interaction, チャンネル: discord.TextChannel):
+        """管理者用：認証ログチャンネルを設定"""
         set_setting('log_channel_id', str(チャンネル.id))
         await interaction.response.send_message(f"✅ 認証ログチャンネルを {チャンネル.mention} に設定しました。", ephemeral=True)
 
-    @app_commands.command(name="認証コード承認", description="発行された認証コードを承認します。")
-    async def approve_code(self, interaction: Interaction, コード: str):
-        # 承認処理
-        ip_address = approve_ip_by_id(コード)
-        
-        if ip_address:
-            # 成功メッセージ
-            embed = Embed(
-                title="✅ IPアドレス認証が完了しました",
-                description=f"コード `{コード}` を持つIPアドレス (`{ip_address}`) の認証を承認しました。",
-                color=discord.Color.green()
-            )
-            embed.set_footer(text=f"実行者: {interaction.user.display_name} ({interaction.user.id})")
-            
-            # ログチャンネルへの通知
-            log_channel_id = get_setting('log_channel_id')
-            if log_channel_id:
-                try:
-                    log_channel = self.get_channel(int(log_channel_id))
-                    if log_channel:
-                        await log_channel.send(embed=embed)
-                except Exception:
-                    pass # ログ送信失敗は無視
-
-            await interaction.response.send_message("✅ 認証が完了しました。ユーザーの画面が切り替わります。", ephemeral=True)
-        else:
-            # 失敗メッセージ
-            await interaction.response.send_message("❌ 無効な認証コードです。コードを再確認するか、ユーザーに再発行させてください。", ephemeral=True)
+    @app_commands.command(name="認証コード承認", description="認証コード承認用のボタンを表示します。")
+    async def approve_code_slash(self, interaction: Interaction):
+        """認証コード入力ボタンを設置するコマンド"""
+        embed = Embed(
+            title="認証コード承認が必要です",
+            description="ウェブページに表示された**6桁の認証コード**を、下の**[認証コード入力]ボタン**を押して表示されるフォームに入力してください。",
+            color=discord.Color.blue()
+        )
+        # コマンドを実行したユーザーに、画像のようなボタン付きのメッセージを送信
+        await interaction.response.send_message(
+            embed=embed,
+            view=AuthCodeView(self),
+            ephemeral=False # 全員に見えるようにするためephemeralをFalseに (画像と同様の見た目にする)
+        )
 
 
 # ==============================================================================
