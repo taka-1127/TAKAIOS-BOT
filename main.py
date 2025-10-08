@@ -5,7 +5,7 @@ import string
 import datetime
 import asyncio
 import threading
-import logging # 💡 強化ポイント: ロギングの導入
+import logging
 from dotenv import load_dotenv
 
 # Discord
@@ -15,13 +15,13 @@ from discord import app_commands, Embed, Interaction, ui, ButtonStyle
 
 # Flask
 from flask import Flask, request, jsonify, render_template_string
-from waitress import serve # 💡 強化ポイント: 本番環境向けWSGIサーバーを導入
+from waitress import serve 
 
 # ==============================================================================
 # 1. 初期設定とグローバル変数
 # ==============================================================================
 
-# ロギング設定 (BotとFlask両方で共通利用)
+# ロギング設定
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s'
@@ -32,13 +32,13 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Renderのエフェメラル環境に対応するため、相対パスを使用 (永続性はないが動作はする)
+# Renderのエフェメラル環境に対応するため、相対パスを使用
 DATABASE_FILE = 'ip_auth.db'
 
-# 💡 強化ポイント: SQLiteの排他制御のためのスレッドロック
+# SQLiteの排他制御のためのスレッドロック (FlaskとBotの同時アクセス対策)
 DB_LOCK = threading.Lock()
 
-# 認証後のコンテンツ (内容は省略せずそのまま維持)
+# 認証後のコンテンツ (更新版コンテンツ)
 AUTHENTICATED_CONTENT_HTML = """
           <style>
             #auth-content-card {
@@ -55,13 +55,12 @@ AUTHENTICATED_CONTENT_HTML = """
             <div id="auth-content-card">
               <h2>✅ 認証成功！ようこそ！</h2>
               <p style="margin-top: 10px;">このページが**更新版のコンテンツ**です。</p>
-              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効ですが、サーバーが再起動するとリセットされます。リセットされたら再度承認が必要です。）</p>
+              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効ですが、サーバーが再起動するとリセットされる場合があります。リセットされたら再度承認が必要です。）</p>
             </div>
           </center>
 """
 
-# HTMLテンプレート (長いため、コードの末尾に移動した前回版のHTMLをそのまま使用)
-# テンプレート全体は省略...（元のコードのAUTH_HTML_TEMPLATEの内容を維持）
+# HTMLテンプレート (CSSとJavaScriptを含む完全版)
 AUTH_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ja">
@@ -74,7 +73,97 @@ AUTH_HTML_TEMPLATE = """
     ></script>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
-    /* ... CSS部分は省略 ... */
+/* --- CSS --- */
+@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap");
+
+/* ====== Theme Tokens ====== */
+:root {
+  --bg-color: #f6f7fb; --bg-aurora-1: #b8d7ff; --bg-aurora-2: #ffe1f0; --bg-aurora-3: #d9fff1;
+  --card-bg: rgba(255, 255, 255, 0.65); --card-backdrop: blur(14px);
+  --primary-text: #1b1f24; --secondary-text: #5a6572;
+  --accent-color: #0d6efd; --accent-color-2: #00bcd4;
+  --error-color: #dc3545; --error-color-2: #ff6b7a;
+  --button-bg: #0d6efd; --button-hover-bg: #0b5ed7; 
+  --border-color: rgba(27, 31, 36, 0.06); --shadow-color: rgba(16, 24, 40, 0.08);
+  --radius: 20px; --transition-time: 0.45s; --icon-fill: #333333;
+}
+:root[data-theme="dark"] {
+  --bg-color: #0e1320; --bg-aurora-1: #2643a7; --bg-aurora-2: #7a2e7b; --bg-aurora-3: #0b6e6b;
+  --card-bg: rgba(26, 32, 56, 0.6); --card-backdrop: blur(16px);
+  --primary-text: #f4f6fb; --secondary-text: #c0c7d2;
+  --accent-color: #00f5ff; --accent-color-2: #5a8bff;
+  --error-color: #ff7b88; --error-color-2: #ffb3bd;
+  --button-bg: #00f5ff; --button-hover-bg: #00b0ff; 
+  --border-color: rgba(255, 255, 255, 0.06); --shadow-color: rgba(0, 0, 0, 0.25);
+  --icon-fill: #e1e1ff;
+}
+
+/* ====== Base / Card ====== */
+* { box-sizing: border-box; }
+html { font-family: "Noto Sans JP", system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; }
+body { margin: 0; min-height: 100vh; color: var(--primary-text); background: var(--bg-color); display: grid; place-items: center; overflow-x: hidden; transition: background-color var(--transition-time) ease; }
+body::before, body::after { content: ''; position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.4; z-index: -1; animation: auroraMove 40s infinite alternate; }
+body::before { top: 10%; left: 5%; width: 50vw; height: 50vh; background-color: var(--bg-aurora-1); }
+body::after { bottom: 10%; right: 5%; width: 40vw; height: 40vh; background-color: var(--bg-aurora-2); }
+#authenticated-content { display: none; width: 100%; height: 100vh; position: fixed; top: 0; left: 0; z-index: 100; background-color: var(--bg-color); }
+
+.container {
+  width: 100%; max-width: 350px; 
+  margin: 10px; padding: 25px 20px; 
+  background: var(--card-bg); backdrop-filter: var(--card-backdrop);
+  border-radius: var(--radius); position: relative; text-align: center;
+  box-shadow: 0 10px 40px var(--shadow-color), 0 1px 0 rgba(255,255,255,0.6) inset;
+  animation: popIn .6s cubic-bezier(.175,.885,.32,1.275) forwards; opacity: 0;
+}
+.illustration-wrapper { margin-bottom: 0.8rem; opacity: 0; min-height: 60px; }
+.success-icon, .error-icon { width: 60px; height: 60px; }
+
+/* ====== Text / Steps ====== */
+.title { font-size: 1.4rem; margin: 0 0 .5rem; opacity: 0; font-weight: 800; color: var(--accent-color); }
+.divider { height: 1px; width: 90%; margin: 8px auto 16px; background: var(--border-color); opacity: 1; }
+.message { font-size: 0.95rem; line-height: 1.6; margin: 0; }
+.auth-step { padding: 12px; border-radius: 10px; margin-bottom: 12px; border: 2px solid var(--border-color); text-align: left; background: rgba(255,255,255,0.4); }
+.step-title { font-weight: 800; font-size: 1.05rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; color: var(--primary-text); }
+.message-small { font-size: 0.85rem; line-height: 1.4; margin: 0; color: var(--secondary-text); }
+#generated-id {
+    font-family: 'Consolas', monospace; font-size: 1.2rem; font-weight: bold; color: var(--accent-color);
+    background: rgba(0, 0, 0, 0.05); display: block; padding: 8px; border-radius: 6px; text-align: center;
+    letter-spacing: 2px; margin-bottom: 10px; border: 1px dashed var(--accent-color);
+}
+.step-button { 
+    padding: 8px 16px; font-size: 0.9rem; border-radius: 6px; width: 100%; 
+    border: none; background-color: var(--button-bg); color: #fff; cursor: pointer; font-weight: 700;
+    transition: background-color 0.2s ease;
+}
+.step-button:hover:not(:disabled) { background-color: var(--button-hover-bg); transform: translateY(-1px); }
+.step-button:disabled { background-color: #6c757d; cursor: not-allowed; opacity: 0.7; }
+#auth-message { margin-top: 15px; font-weight: 700; color: var(--primary-text); }
+
+
+/* ====== Footer / Theme Switch ====== */
+.page-footer { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: .75rem; }
+.support-link { color: var(--secondary-text); padding: 2px 8px; border-radius: 12px; }
+.theme-switch-wrapper { position: fixed; bottom: 8px; right: 8px; }
+.theme-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+.slider { background-color: var(--switch-bg); border-radius: 34px; }
+.slider-icon { position: absolute; content: ""; height: 20px; width: 20px; left: 2px; bottom: 2px; background-color: var(--switch-slider); border-radius: 50%; transition: all var(--transition-time) cubic-bezier(.175,.885,.32,1.275); }
+.sun-icon, .moon-icon { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 12px; height: 12px; fill: var(--icon-fill); transition: opacity var(--transition-time); }
+.moon-icon { opacity: 0; }
+input:checked + .slider .slider-icon { transform: translateX(20px); }
+input:checked + .slider .sun-icon { opacity: 0; }
+input:checked + .slider .moon-icon { opacity: 1; }
+
+/* ====== Animations ====== */
+@keyframes popIn { from {opacity:0; transform:scale(.96)} to {opacity:1; transform:scale(1)} }
+@keyframes auroraMove { 0% {transform: translate(0, 0);} 50% {transform: translate(30%, 20%);} 100% {transform: translate(0, 0);} }
+@keyframes drawCircle { to { stroke-dashoffset: 0; } }
+@keyframes drawCheck { to { stroke-dashoffset: 0; } }
+@keyframes drawCross { to { stroke-dashoffset: 0; } }
+
+.success-icon__circle { stroke: url(#grad-success); stroke-dasharray: 150; stroke-dashoffset: 150; animation: drawCircle 1s ease-out forwards; }
+.success-icon__check { stroke: url(#grad-success); stroke-dasharray: 50; stroke-dashoffset: 50; animation: drawCheck 0.5s 0.8s ease-out forwards; }
+.error-icon__circle { stroke: url(#grad-error); stroke-dasharray: 150; stroke-dashoffset: 150; animation: drawCircle 1s ease-out forwards; }
+.error-icon__cross { stroke: url(#grad-error); stroke-dasharray: 40 40; stroke-dashoffset: 80; animation: drawCross 0.5s 0.8s ease-out forwards; }
     </style>
   </head>
   <body>
@@ -148,10 +237,10 @@ AUTH_HTML_TEMPLATE = """
 
     <script>
       // 🚨 サーバーの公開URLを設定してください (例: "https://your-public-server.com")
-      const serverUrl = "https://takaios-bot.onrender.com"; // ★★★ ここを必ず修正 ★★★
+      const serverUrl = "https://takaios-bot.onrender.com"; // ★★★ Renderの実際の公開URLに修正 ★★★
       let checkInterval;
 
-      // ... JavaScript (認証コード生成/チェックロジック、テーマ管理) は変更なし ...
+      // JavaScript (認証コード生成/チェックロジック、テーマ管理)
       async function generateAuthId() {
         const idSpan = document.getElementById("generated-id");
         const copyButton = document.getElementById("copy-id-button");
@@ -218,7 +307,6 @@ AUTH_HTML_TEMPLATE = """
         }
 
         try {
-          // 認証状態の確認
           const authResponse = await fetch(serverUrl + "/check_auth");
           const authData = await authResponse.json();
 
@@ -231,14 +319,13 @@ AUTH_HTML_TEMPLATE = """
             document.getElementById("dynamic-flow").style.display = "none";
             iconWrapper.style.opacity = 1;
 
-            // 成功アニメーションSVGを挿入
+            // 成功アニメーション
             iconWrapper.innerHTML = `
                 <svg class="success-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52" aria-hidden="true">
                     <circle class="success-icon__circle" cx="26" cy="26" r="24" fill="none"/>
                     <path class="success-icon__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
                 </svg>
             `;
-            // 紙吹雪アニメーション
             confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 }, colors: ["#00f5ff", "#0d6efd", "#f8f9fa", "#6c757d"], });
 
             await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -255,7 +342,6 @@ AUTH_HTML_TEMPLATE = """
             } else {
               authTitle.textContent = "❌ コンテンツ読み込み失敗";
               authMessage.textContent = `エラーコード: ${contentResponse.status}。サーバーのコンテンツ設定を確認してください。`;
-              // 失敗アイコンに切り替え
               iconWrapper.innerHTML = `
                 <svg class="error-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52" aria-hidden="true">
                     <circle class="error-icon__circle" cx="26" cy="26" r="24" fill="none" style="stroke-dashoffset:0;"/>
@@ -274,7 +360,6 @@ AUTH_HTML_TEMPLATE = """
             iconWrapper.innerHTML = '';
             iconWrapper.style.opacity = 0;
 
-            // 認証コードが未発行/期限切れの場合は再発行を試みる
             if (
               !document.getElementById("generated-id").dataset.code ||
               document.getElementById("id-status").textContent.includes("失敗")
@@ -285,7 +370,6 @@ AUTH_HTML_TEMPLATE = """
         } catch (error) {
           authTitle.textContent = "🚨 サーバーエラー";
           authMessage.textContent = "サーバーに接続できません。`serverUrl`の設定またはサーバーの状態を確認してください。";
-          // エラーアイコン表示
           iconWrapper.innerHTML = `
                 <svg class="error-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52" aria-hidden="true">
                     <circle class="error-icon__circle" cx="26" cy="26" r="24" fill="none" style="stroke-dashoffset:0;"/>
@@ -296,7 +380,7 @@ AUTH_HTML_TEMPLATE = """
         }
       }
 
-      // ... JavaScript (テーママネージャー) は変更なし ...
+      // テーママネージャー
       class ThemeManager {
         constructor() {
           this.checkbox = document.querySelector("#checkbox");
@@ -337,7 +421,6 @@ AUTH_HTML_TEMPLATE = """
       // 初回実行と3秒ごとの認証状態チェック
       window.onload = () => {
           checkAuthentication();
-          // ポーリング処理を3秒ごと実行
           checkInterval = setInterval(checkAuthentication, 3000);
       };
     </script>
@@ -351,7 +434,7 @@ AUTH_HTML_TEMPLATE = """
 def init_db():
     """データベースの初期化とテーブルの作成"""
     try:
-        with DB_LOCK: # 💡 DBロックを使用
+        with DB_LOCK:
             with sqlite3.connect(DATABASE_FILE) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -407,6 +490,7 @@ def generate_auth_id(ip_address):
             with sqlite3.connect(DATABASE_FILE) as conn:
                 cursor = conn.cursor()
                 
+                # 既に認証済みならID生成をスキップ
                 if check_auth_status(ip_address):
                      return None
                 
@@ -432,9 +516,11 @@ def check_auth_status(ip_address):
                     is_authenticated, expires_at_str = result
                     expires_at = datetime.datetime.strptime(expires_at_str, '%Y-%m-%d %H:%M:%S')
 
+                    # 認証済みかつ期限内
                     if is_authenticated == 1 and expires_at > datetime.datetime.now():
                         return True
                     
+                    # 未認証だが期限切れの場合、レコードを削除してFalseを返す
                     if expires_at <= datetime.datetime.now() and is_authenticated == 0:
                          cursor.execute("DELETE FROM auth_data WHERE ip_address = ? AND is_authenticated = 0", (ip_address,))
                          conn.commit()
@@ -457,6 +543,7 @@ def approve_ip_by_id(auth_id):
 
                 if result:
                     ip_address = result[0]
+                    # 認証成功。有効期限を7日間に延長
                     new_expires_at = (datetime.datetime.now() + datetime.timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
                     cursor.execute("""
                         UPDATE auth_data 
@@ -472,15 +559,13 @@ def approve_ip_by_id(auth_id):
             return None
 
 # ==============================================================================
-# 3. Flask サーバー設定 (AppFactoryパターンを使用)
+# 3. Flask サーバー設定
 # ==============================================================================
 
 app = Flask(__name__)
 
-# Flaskのルーティングは変更なし。IPアドレス取得はX-Forwarded-Forを優先する堅牢な実装を維持。
 def get_client_ip(req):
-    """プロキシ環境から真のクライアントIPを取得"""
-    # X-Forwarded-Forヘッダーを優先し、最初のIPを取得 (Render/Heroku対応)
+    """プロキシ環境から真のクライアントIPを取得 (Render対応)"""
     ip_header = req.headers.get('X-Forwarded-For')
     if ip_header:
         return ip_header.split(',')[0].strip()
@@ -502,7 +587,7 @@ def api_generate_id():
     auth_id = generate_auth_id(ip_address)
     if not auth_id: 
         logger.warning(f"Failed to generate auth ID for IP {ip_address}.")
-        return jsonify({"status": "authenticated"}), 200 # DBエラーの場合も安全のため authenticated を返す
+        return jsonify({"status": "authenticated"}), 200
         
     logger.info(f"Generated auth ID {auth_id} for IP {ip_address}.")
     return jsonify({"status": "success", "auth_id": auth_id}), 200
@@ -516,7 +601,7 @@ def api_check_auth():
 
 @app.route('/authenticated_content', methods=['GET'])
 def api_authenticated_content():
-    """認証成功時に表示するコンテンツ (更新版のあれ)"""
+    """認証成功時に表示するコンテンツ"""
     ip_address = get_client_ip(request)
     
     if check_auth_status(ip_address):
@@ -533,7 +618,6 @@ def api_authenticated_content():
 
 # 認証コード入力用モーダルフォーム
 class AuthCodeModal(ui.Modal, title="認証コード承認"):
-    """ユーザーから認証コードを受け取るためのモーダル"""
     code_input = ui.TextInput(
         label="認証コードを入力してください",
         placeholder="ウェブページに表示されている6桁のコード (例: A1B2C3)",
@@ -550,7 +634,6 @@ class AuthCodeModal(ui.Modal, title="認証コード承認"):
     async def on_submit(self, interaction: Interaction):
         code = self.code_input.value.upper()
         
-        # 💡 DB処理を関数化しているため、ここではロック不要
         ip_address = approve_ip_by_id(code)
         
         if ip_address:
@@ -561,7 +644,7 @@ class AuthCodeModal(ui.Modal, title="認証コード承認"):
             )
             embed.set_footer(text=f"実行者: {interaction.user.display_name} ({interaction.user.id})")
             
-            # 💡 ログチャンネルへの通知 (エラー処理をロギングに統一)
+            # ログチャンネルへの通知
             log_channel_id = get_setting('log_channel_id')
             if log_channel_id:
                 try:
@@ -593,10 +676,9 @@ class AuthCodeView(ui.View):
 
 class MyBot(commands.Bot):
     def __init__(self):
-        # 必要なすべてのインテントを設定 (前回のエラー対策済みであることを前提)
         intents = discord.Intents.default()
         intents.message_content = True 
-        intents.members = True # メンバーインテントも一応追加
+        intents.members = True 
         
         super().__init__(command_prefix='!', intents=intents)
         
@@ -605,9 +687,8 @@ class MyBot(commands.Bot):
         # 永続Viewの追加
         self.add_view(AuthCodeView(self))
         
-        # 💡 強化ポイント: コマンドツリーの同期
+        # コマンドツリーの同期
         try:
-            # コマンドの登録
             self.tree.add_command(self.set_log_channel)
             self.tree.add_command(self.approve_code_slash)
             
@@ -618,7 +699,6 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
-        # 🚨 起動時のコマンドSignatureMismatchは、このsync()の成功で解消します。
 
     # --- Discord コマンド ---
 
@@ -642,12 +722,10 @@ class MyBot(commands.Bot):
         )
         
     async def on_app_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
-        """💡 強化ポイント: コマンド実行時の一般的なエラー処理"""
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message("❌ このコマンドを実行する権限がありません。", ephemeral=True)
         else:
             logger.error(f"Unhandled command error in {interaction.command.name}: {error}")
-            # ユーザーには一般的なエラーを返す
             if not interaction.response.is_done():
                  await interaction.response.send_message("❌ コマンドの実行中に予期せぬエラーが発生しました。", ephemeral=True)
 
@@ -658,12 +736,10 @@ class MyBot(commands.Bot):
 
 def run_flask_server():
     """Flaskサーバーを別スレッドで起動 (waitress使用)"""
-    # Renderは環境変数PORTを提供するため、それを使用
     port = int(os.environ.get('PORT', 8000)) 
     logger.info(f"Starting Flask server using Waitress on http://0.0.0.0:{port}")
     try:
-        # 💡 強化ポイント: Flask開発サーバーの代わりに、本番環境向けのWSGIサーバー Waitressを使用
-        # Waitressはマルチスレッド/プロセスを適切に扱い、より安定します
+        # Waitressを使用して本番環境向けに起動
         serve(app, host='0.0.0.0', port=port)
     except Exception as e:
         logger.critical(f"Flask server fatal error: {e}")
@@ -673,13 +749,14 @@ def run_bot(token):
     while True:
         try:
             bot = MyBot()
-            bot.run(token)
+            # Botが切断された場合、自動で再接続を試みる
+            bot.run(token) 
         except discord.errors.LoginFailure:
             logger.critical("Discord Token is invalid. Cannot log in.")
-            break # トークンエラーは致命的なので終了
+            break 
         except Exception as e:
             logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 5 seconds...")
-            asyncio.sleep(5) # その他のエラーで切断された場合は5秒後に再接続
+            asyncio.sleep(5) 
 
 
 if __name__ == '__main__':
@@ -689,10 +766,10 @@ if __name__ == '__main__':
         # 1. DB初期化
         init_db()
         
-        # 2. Flaskサーバーをスレッドで起動 (Webサーバー)
+        # 2. Flaskサーバーをスレッドで起動
         flask_thread = threading.Thread(target=run_flask_server, name="Flask-Server")
         flask_thread.daemon = True 
         flask_thread.start()
         
-        # 3. Discord Botをメインスレッドで起動 (エラー時に再接続を試みる)
+        # 3. Discord Botをメインスレッドで起動
         run_bot(DISCORD_TOKEN)
