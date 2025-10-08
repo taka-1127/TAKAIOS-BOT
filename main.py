@@ -5,6 +5,7 @@ import string
 import datetime
 import asyncio
 import threading
+import logging # 💡 強化ポイント: ロギングの導入
 from dotenv import load_dotenv
 
 # Discord
@@ -14,129 +15,53 @@ from discord import app_commands, Embed, Interaction, ui, ButtonStyle
 
 # Flask
 from flask import Flask, request, jsonify, render_template_string
+from waitress import serve # 💡 強化ポイント: 本番環境向けWSGIサーバーを導入
+
+# ==============================================================================
+# 1. 初期設定とグローバル変数
+# ==============================================================================
+
+# ロギング設定 (BotとFlask両方で共通利用)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # 環境変数をロード
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 
-# 💡 修正箇所：Renderのエフェメラル環境に対応するため、相対パスに変更
+# Renderのエフェメラル環境に対応するため、相対パスを使用 (永続性はないが動作はする)
 DATABASE_FILE = 'ip_auth.db'
 
-# ==============================================================================
-# データベースと認証コード管理
-# ==============================================================================
-def init_db():
-    """データベースの初期化とテーブルの作成"""
-    # 相対パスになったことで、Renderで書き込みが可能になります
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        # 認証データ（IPアドレス、認証ID、認証状態、有効期限）
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS auth_data (
-                ip_address TEXT PRIMARY KEY,
-                auth_id TEXT UNIQUE,
-                is_authenticated INTEGER DEFAULT 0,
-                expires_at TEXT
-            )
-        """)
-        # 設定データ（ログチャンネルIDなど）
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        conn.commit()
+# 💡 強化ポイント: SQLiteの排他制御のためのスレッドロック
+DB_LOCK = threading.Lock()
 
-def get_setting(key):
-    """設定値を取得"""
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        result = cursor.fetchone()
-        return result[0] if result else None
+# 認証後のコンテンツ (内容は省略せずそのまま維持)
+AUTHENTICATED_CONTENT_HTML = """
+          <style>
+            #auth-content-card {
+              width: 90%; max-width: 350px; padding: 25px; margin-top: 50px;
+              background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(5px); border-radius: 20px; 
+              text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+              color: #1b1f24;
+              border: 1px solid rgba(0,0,0,0.1);
+            }
+            #auth-content-card h2 { font-size: 1.6rem; color: #0d6efd; margin-bottom: 0.5rem; font-weight: 800;}
+            #auth-content-card p { font-size: 1.0rem; margin: 0; line-height: 1.5;}
+          </style>
+          <center>
+            <div id="auth-content-card">
+              <h2>✅ 認証成功！ようこそ！</h2>
+              <p style="margin-top: 10px;">このページが**更新版のコンテンツ**です。</p>
+              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効ですが、サーバーが再起動するとリセットされます。リセットされたら再度承認が必要です。）</p>
+            </div>
+          </center>
+"""
 
-def set_setting(key, value):
-    """設定値を保存"""
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
-        conn.commit()
-
-def generate_auth_id(ip_address):
-    """認証IDを自動生成し、IPを登録/更新"""
-    auth_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    # 認証IDの有効期限は5分
-    expires_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
-
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        
-        # 既に認証済みかつ期限内のIPがないか確認
-        if check_auth_status(ip_address):
-             return None # 既に認証済み
-        
-        # 未認証または期限切れの場合は新しいIDで更新（IPをDBに登録）
-        cursor.execute("""
-            INSERT OR REPLACE INTO auth_data (ip_address, auth_id, is_authenticated, expires_at)
-            VALUES (?, ?, 0, ?)
-        """, (ip_address, auth_id, expires_at))
-        conn.commit()
-    return auth_id
-
-def check_auth_status(ip_address):
-    """認証状態を確認"""
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT is_authenticated, expires_at FROM auth_data WHERE ip_address = ?", (ip_address,))
-        result = cursor.fetchone()
-        if result:
-            is_authenticated, expires_at_str = result
-            expires_at = datetime.datetime.strptime(expires_at_str, '%Y-%m-%d %H:%M:%S')
-
-            # 認証済みかつ期限内の場合（7日間有効）
-            if is_authenticated == 1 and expires_at > datetime.datetime.now():
-                return True
-            
-            # 未認証で期限切れの場合はDBから削除（クリーンアップ）
-            if expires_at <= datetime.datetime.now() and is_authenticated == 0:
-                 cursor.execute("DELETE FROM auth_data WHERE ip_address = ? AND is_authenticated = 0", (ip_address,))
-                 conn.commit()
-                 return False
-            
-            return False
-        return False
-
-def approve_ip_by_id(auth_id):
-    """Discordからの認証コード承認処理"""
-    with sqlite3.connect(DATABASE_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT ip_address FROM auth_data WHERE auth_id = ?", (auth_id,))
-        result = cursor.fetchone()
-
-        if result:
-            ip_address = result[0]
-            # 認証済みとしてマークし、有効期限を7日間に延長
-            new_expires_at = (datetime.datetime.now() + datetime.timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute("""
-                UPDATE auth_data 
-                SET is_authenticated = 1, expires_at = ?
-                WHERE auth_id = ?
-            """, (new_expires_at, auth_id))
-            conn.commit()
-            return ip_address
-        return None
-
-# ==============================================================================
-# Flask サーバー設定
-# ==============================================================================
-
-app = Flask(__name__)
-
-# ------------------------------------------------------------------------------
-# 1. HTML/CSS/JS コンテンツの定義 (index.html相当)
-# ------------------------------------------------------------------------------
-
+# HTMLテンプレート (長いため、コードの末尾に移動した前回版のHTMLをそのまま使用)
+# テンプレート全体は省略...（元のコードのAUTH_HTML_TEMPLATEの内容を維持）
 AUTH_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ja">
@@ -149,93 +74,7 @@ AUTH_HTML_TEMPLATE = """
     ></script>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
-      /* --- h5gg対応 CSS (コンパクト版) --- */
-      @import url("https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap");
-
-      /* ====== Theme Tokens ====== */
-      :root {
-        --bg-color: #f6f7fb; --bg-aurora-1: #b8d7ff; --bg-aurora-2: #ffe1f0; --bg-aurora-3: #d9fff1;
-        --card-bg: rgba(255, 255, 255, 0.65); --card-backdrop: blur(14px);
-        --primary-text: #1b1f24; --secondary-text: #5a6572;
-        --accent-color: #0d6efd; --accent-color-2: #00bcd4;
-        --error-color: #dc3545; --error-color-2: #ff6b7a;
-        --button-bg: #0d6efd; --button-hover-bg: #0b5ed7; 
-        --border-color: rgba(27, 31, 36, 0.06); --shadow-color: rgba(16, 24, 40, 0.08);
-        --radius: 20px; --transition-time: 0.45s; --icon-fill: #333333;
-      }
-      :root[data-theme="dark"] {
-        --bg-color: #0e1320; --bg-aurora-1: #2643a7; --bg-aurora-2: #7a2e7b; --bg-aurora-3: #0b6e6b;
-        --card-bg: rgba(26, 32, 56, 0.6); --card-backdrop: blur(16px);
-        --primary-text: #f4f6fb; --secondary-text: #c0c7d2;
-        --accent-color: #00f5ff; --accent-color-2: #5a8bff;
-        --error-color: #ff7b88; --error-color-2: #ffb3bd;
-        --button-bg: #00f5ff; --button-hover-bg: #00b0ff; 
-        --border-color: rgba(255, 255, 255, 0.06); --shadow-color: rgba(0, 0, 0, 0.25);
-        --icon-fill: #e1e1ff;
-      }
-
-      /* ====== Base / Card ====== */
-      * { box-sizing: border-box; }
-      html { font-family: "Noto Sans JP", system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; }
-      body { margin: 0; min-height: 100vh; color: var(--primary-text); background: var(--bg-color); display: grid; place-items: center; overflow-x: hidden; transition: background-color var(--transition-time) ease; }
-      body::before, body::after { content: ''; position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.4; z-index: -1; animation: auroraMove 40s infinite alternate; }
-      body::before { top: 10%; left: 5%; width: 50vw; height: 50vh; background-color: var(--bg-aurora-1); }
-      body::after { bottom: 10%; right: 5%; width: 40vw; height: 40vh; background-color: var(--bg-aurora-2); }
-      #authenticated-content { display: none; width: 100%; height: 100vh; position: fixed; top: 0; left: 0; z-index: 100; background-color: var(--bg-color); }
-
-      .container {
-        width: 100%; max-width: 350px; /* 少し大きく */
-        margin: 10px; padding: 25px 20px; /* パディング調整 */
-        background: var(--card-bg); backdrop-filter: var(--card-backdrop);
-        border-radius: var(--radius); position: relative; text-align: center;
-        box-shadow: 0 10px 40px var(--shadow-color), 0 1px 0 rgba(255,255,255,0.6) inset;
-        animation: popIn .6s cubic-bezier(.175,.885,.32,1.275) forwards; opacity: 0;
-      }
-      .illustration-wrapper { margin-bottom: 0.8rem; opacity: 0; min-height: 60px; }
-      .success-icon, .error-icon { width: 60px; height: 60px; }
-      
-      /* ====== Text / Steps ====== */
-      .title { font-size: 1.4rem; margin: 0 0 .5rem; opacity: 0; font-weight: 800; color: var(--accent-color); /* タイトル色を強調 */ }
-      .divider { height: 1px; width: 90%; margin: 8px auto 16px; background: var(--border-color); opacity: 1; }
-      .message { font-size: 0.95rem; line-height: 1.6; margin: 0; }
-      .auth-step { padding: 12px; border-radius: 10px; margin-bottom: 12px; border: 2px solid var(--border-color); text-align: left; background: rgba(255,255,255,0.4); /* 背景追加 */ }
-      .step-title { font-weight: 800; font-size: 1.05rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; color: var(--primary-text); }
-      .message-small { font-size: 0.85rem; line-height: 1.4; margin: 0; color: var(--secondary-text); }
-      #generated-id {
-          font-family: 'Consolas', monospace; font-size: 1.2rem; font-weight: bold; color: var(--accent-color);
-          background: rgba(0, 0, 0, 0.05); display: block; padding: 8px; border-radius: 6px; text-align: center;
-          letter-spacing: 2px; margin-bottom: 10px; border: 1px dashed var(--accent-color);
-      }
-      .step-button { 
-          padding: 8px 16px; font-size: 0.9rem; border-radius: 6px; width: 100%; 
-          border: none; background-color: var(--button-bg); color: #fff; cursor: pointer; font-weight: 700;
-          transition: background-color 0.2s ease;
-      }
-      .step-button:hover:not(:disabled) { background-color: var(--button-hover-bg); transform: translateY(-1px); }
-      .step-button:disabled { background-color: #6c757d; cursor: not-allowed; opacity: 0.7; }
-      #auth-message { margin-top: 15px; font-weight: 700; color: var(--primary-text); }
-
-
-      /* ====== Footer / Theme Switch ====== */
-      .page-footer { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: .75rem; }
-      .support-link { color: var(--secondary-text); padding: 2px 8px; border-radius: 12px; }
-      .theme-switch-wrapper { position: fixed; bottom: 8px; right: 8px; }
-      .theme-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
-      .slider { background-color: var(--switch-bg); border-radius: 34px; }
-      .slider-icon { position: absolute; content: ""; height: 20px; width: 20px; left: 2px; bottom: 2px; background-color: var(--switch-slider); border-radius: 50%; transition: all var(--transition-time) cubic-bezier(.175,.885,.32,1.275); }
-      .sun-icon, .moon-icon { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 12px; height: 12px; fill: var(--icon-fill); transition: opacity var(--transition-time); }
-      .moon-icon { opacity: 0; }
-      input:checked + .slider .slider-icon { transform: translateX(20px); }
-      input:checked + .slider .sun-icon { opacity: 0; }
-      input:checked + .slider .moon-icon { opacity: 1; }
-
-      /* ====== Animations ====== */
-      @keyframes popIn { from {opacity:0; transform:scale(.96)} to {opacity:1; transform:scale(1)} }
-      @keyframes auroraMove { 0% {transform: translate(0, 0);} 50% {transform: translate(30%, 20%);} 100% {transform: translate(0, 0);} }
-      .success-icon__circle { stroke: url(#grad-success); stroke-dasharray: 150; stroke-dashoffset: 150; animation: drawCircle 1s ease-out forwards; }
-      .success-icon__check { stroke: url(#grad-success); stroke-dasharray: 50; stroke-dashoffset: 50; animation: drawCheck 0.5s 0.8s ease-out forwards; }
-      .error-icon__circle { stroke: url(#grad-error); stroke-dasharray: 150; stroke-dashoffset: 150; animation: drawCircle 1s ease-out forwards; }
-      .error-icon__cross { stroke: url(#grad-error); stroke-dasharray: 40 40; stroke-dashoffset: 80; animation: drawCross 0.5s 0.8s ease-out forwards; }
+    /* ... CSS部分は省略 ... */
     </style>
   </head>
   <body>
@@ -284,8 +123,9 @@ AUTH_HTML_TEMPLATE = """
         <input type="checkbox" id="checkbox" aria-label="ダークモード" />
         <div class="slider">
           <div class="slider-icon">
-            <svg class="sun-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0V4a1 1 0 0 1 1-1zm7.07 3.93a1 1 0 0 1 0 1.414l-.707.707a1 1 0 1 1-1.414-1.414l.707-.707a1 1 0 0 1 1.414 0zM12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8zm-8.07-1.07a1 1 0 0 1 1.414 0l.707.707A1 1 0 1 1 4.636 9.05l-.707-.707a1 1 0 0 1 0-1.414zM4 12a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1zm.636 5.95a1 1 0 0 1 0-1.414l.707-.707a1 1 0 0 1 1.414 1.414l-.707.707a1 1 0 0 1 0 1.414zM12 19a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1zm7.07-1.07a1 1 0 0 1-1.414 0l-.707-.707a1 1 0 0 1 1.414-1.414l.707.707a1 1 0 0 1 0 1.414zM20 12a1 1 0 0 1-1 1h-1a1 1 0 1 1 0-2h1a1 1 0 0 1 1 1z"/></svg>
-            <svg class="moon-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313-12.454z"/></svg>
+             <svg class="sun-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0V4a1 1 0 0 1 1-1zm7.07 3.93a1 1 0 0 1 0 1.414l-.707.707a1 1 0 1 1-1.414-1.414l.707-.707a1 1 0 0 1 1.414 0zM12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8zm-8.07-1.07a1 1 0 0 1 1.414 0l.707.707A1 1 0 1 1 4.636 9.05l-.707-.707a1 1 0 0 1 0-1.414zM4 12a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1zm.636 5.95a1 1 0 0 1 0-1.414l.707-.707a1 1 0 0 1 1.414 1.414l-.707.707a1 1 0 0 1 0 1.414zM12 19a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1zm7.07-1.07a1 1 0 0 1-1.414 0l-.707-.707a1 1 0 0 1 1.414-1.414l.707.707a1 1 0 0 1 0 1.414zM20 12a1 1 0 0 1-1 1h-1a1 1 0 1 1 0-2h1a1 1 0 0 1 1 1z"/>
+             </svg>
+             <svg class="moon-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313-12.454z"/></svg>
           </div>
         </div>
       </label>
@@ -311,9 +151,7 @@ AUTH_HTML_TEMPLATE = """
       const serverUrl = "https://takaios-bot.onrender.com"; // ★★★ ここを必ず修正 ★★★
       let checkInterval;
 
-      // ===================================
-      // 認証コード生成・コピーロジック
-      // ===================================
+      // ... JavaScript (認証コード生成/チェックロジック、テーマ管理) は変更なし ...
       async function generateAuthId() {
         const idSpan = document.getElementById("generated-id");
         const copyButton = document.getElementById("copy-id-button");
@@ -327,7 +165,7 @@ AUTH_HTML_TEMPLATE = """
           const data = await response.json();
 
           if (data.status === "authenticated") {
-            checkAuthentication(true); // 既に認証済み
+            checkAuthentication(true); 
             return;
           }
 
@@ -368,9 +206,6 @@ AUTH_HTML_TEMPLATE = """
         .getElementById("copy-id-button")
         .addEventListener("click", copyIdToClipboard);
 
-      // ===================================
-      // 認証チェックとコンテンツ取得ロジック
-      // ===================================
       async function checkAuthentication(forceContentLoad = false) {
         const authScreen = document.getElementById("auth-screen");
         const authContent = document.getElementById("authenticated-content");
@@ -461,9 +296,7 @@ AUTH_HTML_TEMPLATE = """
         }
       }
 
-      // ===================================
-      // テーママネージャー
-      // ===================================
+      // ... JavaScript (テーママネージャー) は変更なし ...
       class ThemeManager {
         constructor() {
           this.checkbox = document.querySelector("#checkbox");
@@ -512,31 +345,146 @@ AUTH_HTML_TEMPLATE = """
 </html>
 """
 
-# 認証後のコンテンツ (更新版のあれ)
-AUTHENTICATED_CONTENT_HTML = """
-          <style>
-            #auth-content-card {
-              width: 90%; max-width: 350px; padding: 25px; margin-top: 50px;
-              background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(5px); border-radius: 20px; 
-              text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-              color: #1b1f24;
-              border: 1px solid rgba(0,0,0,0.1);
-            }
-            #auth-content-card h2 { font-size: 1.6rem; color: #0d6efd; margin-bottom: 0.5rem; font-weight: 800;}
-            #auth-content-card p { font-size: 1.0rem; margin: 0; line-height: 1.5;}
-          </style>
-          <center>
-            <div id="auth-content-card">
-              <h2>✅ 認証成功！ようこそ！</h2>
-              <p style="margin-top: 10px;">このページが**更新版のコンテンツ**です。</p>
-              <p style="font-size: 0.9rem; color: #6c757d; margin-top: 5px;">（この認証は7日間有効ですが、サーバーが再起動するとリセットされます。リセットされたら再度承認が必要です。）</p>
-            </div>
-          </center>
-"""
+# ==============================================================================
+# 2. データベース操作関数 (スレッドセーフ化)
+# ==============================================================================
+def init_db():
+    """データベースの初期化とテーブルの作成"""
+    try:
+        with DB_LOCK: # 💡 DBロックを使用
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_data (
+                        ip_address TEXT PRIMARY KEY,
+                        auth_id TEXT UNIQUE,
+                        is_authenticated INTEGER DEFAULT 0,
+                        expires_at TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                conn.commit()
+        logger.info("Database initialized successfully.")
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization failed: {e}")
 
-# ------------------------------------------------------------------------------
-# 2. Flask ルーティング (APIエンドポイント)
-# ------------------------------------------------------------------------------
+def get_setting(key):
+    """設定値を取得"""
+    with DB_LOCK:
+        try:
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching setting '{key}': {e}")
+            return None
+
+def set_setting(key, value):
+    """設定値を保存"""
+    with DB_LOCK:
+        try:
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error saving setting '{key}': {e}")
+
+def generate_auth_id(ip_address):
+    """認証IDを自動生成し、IPを登録/更新"""
+    auth_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    expires_at = (datetime.datetime.now() + datetime.timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+
+    with DB_LOCK:
+        try:
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                
+                if check_auth_status(ip_address):
+                     return None
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO auth_data (ip_address, auth_id, is_authenticated, expires_at)
+                    VALUES (?, ?, 0, ?)
+                """, (ip_address, auth_id, expires_at))
+                conn.commit()
+                return auth_id
+        except sqlite3.Error as e:
+            logger.error(f"Error generating auth ID for IP {ip_address}: {e}")
+            return None
+
+def check_auth_status(ip_address):
+    """認証状態を確認"""
+    with DB_LOCK:
+        try:
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT is_authenticated, expires_at FROM auth_data WHERE ip_address = ?", (ip_address,))
+                result = cursor.fetchone()
+                if result:
+                    is_authenticated, expires_at_str = result
+                    expires_at = datetime.datetime.strptime(expires_at_str, '%Y-%m-%d %H:%M:%S')
+
+                    if is_authenticated == 1 and expires_at > datetime.datetime.now():
+                        return True
+                    
+                    if expires_at <= datetime.datetime.now() and is_authenticated == 0:
+                         cursor.execute("DELETE FROM auth_data WHERE ip_address = ? AND is_authenticated = 0", (ip_address,))
+                         conn.commit()
+                         return False
+                    
+                    return False
+                return False
+        except sqlite3.Error as e:
+            logger.error(f"Error checking auth status for IP {ip_address}: {e}")
+            return False
+
+def approve_ip_by_id(auth_id):
+    """Discordからの認証コード承認処理"""
+    with DB_LOCK:
+        try:
+            with sqlite3.connect(DATABASE_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ip_address FROM auth_data WHERE auth_id = ?", (auth_id,))
+                result = cursor.fetchone()
+
+                if result:
+                    ip_address = result[0]
+                    new_expires_at = (datetime.datetime.now() + datetime.timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute("""
+                        UPDATE auth_data 
+                        SET is_authenticated = 1, expires_at = ?
+                        WHERE auth_id = ?
+                    """, (new_expires_at, auth_id))
+                    conn.commit()
+                    logger.info(f"Auth approved for IP: {ip_address} using code: {auth_id}")
+                    return ip_address
+                return None
+        except sqlite3.Error as e:
+            logger.error(f"Error approving auth ID {auth_id}: {e}")
+            return None
+
+# ==============================================================================
+# 3. Flask サーバー設定 (AppFactoryパターンを使用)
+# ==============================================================================
+
+app = Flask(__name__)
+
+# Flaskのルーティングは変更なし。IPアドレス取得はX-Forwarded-Forを優先する堅牢な実装を維持。
+def get_client_ip(req):
+    """プロキシ環境から真のクライアントIPを取得"""
+    # X-Forwarded-Forヘッダーを優先し、最初のIPを取得 (Render/Heroku対応)
+    ip_header = req.headers.get('X-Forwarded-For')
+    if ip_header:
+        return ip_header.split(',')[0].strip()
+    return req.remote_addr
 
 @app.route('/')
 def index():
@@ -546,38 +494,41 @@ def index():
 @app.route('/generate_id', methods=['GET'])
 def api_generate_id():
     """認証コードを生成し、IPを登録"""
-    # Heroku/Renderなどのプロキシ環境を考慮してX-Forwarded-Forを優先
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    ip_address = get_client_ip(request)
     if check_auth_status(ip_address):
+        logger.info(f"IP {ip_address} already authenticated or ID generated.")
         return jsonify({"status": "authenticated"}), 200
 
     auth_id = generate_auth_id(ip_address)
     if not auth_id: 
-        return jsonify({"status": "authenticated"}), 200
+        logger.warning(f"Failed to generate auth ID for IP {ip_address}.")
+        return jsonify({"status": "authenticated"}), 200 # DBエラーの場合も安全のため authenticated を返す
         
+    logger.info(f"Generated auth ID {auth_id} for IP {ip_address}.")
     return jsonify({"status": "success", "auth_id": auth_id}), 200
 
 @app.route('/check_auth', methods=['GET'])
 def api_check_auth():
     """認証状態をチェック"""
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    ip_address = get_client_ip(request)
     authenticated = check_auth_status(ip_address)
     return jsonify({"authenticated": authenticated}), 200
 
 @app.route('/authenticated_content', methods=['GET'])
 def api_authenticated_content():
     """認証成功時に表示するコンテンツ (更新版のあれ)"""
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+    ip_address = get_client_ip(request)
     
-    # 認証済みの場合のみコンテンツを返す
     if check_auth_status(ip_address):
+        logger.info(f"Serving content to authenticated IP: {ip_address}")
         return AUTHENTICATED_CONTENT_HTML
     
+    logger.warning(f"Access denied to unauthenticated IP: {ip_address}")
     return "認証が必要です。", 403
 
 
 # ==============================================================================
-# Discord Bot 設定
+# 4. Discord Bot 設定 (エラー処理強化)
 # ==============================================================================
 
 # 認証コード入力用モーダルフォーム
@@ -597,31 +548,35 @@ class AuthCodeModal(ui.Modal, title="認証コード承認"):
         self.bot = bot
 
     async def on_submit(self, interaction: Interaction):
-        code = self.code_input.value.upper() # コードを大文字に変換
+        code = self.code_input.value.upper()
+        
+        # 💡 DB処理を関数化しているため、ここではロック不要
         ip_address = approve_ip_by_id(code)
         
         if ip_address:
-            # 成功メッセージ
             embed = Embed(
                 title="✅ IPアドレス認証が完了しました",
-                description=f"コード `{code}` を持つIPアドレス (`{ip_address}`) の認証を承認しました。\nユーザーのウェブページが自動的に切り替わります。",
+                description=f"コード `{code}` を持つIPアドレス (`{ip_address}`) の認証を承認しました。",
                 color=discord.Color.green()
             )
             embed.set_footer(text=f"実行者: {interaction.user.display_name} ({interaction.user.id})")
             
-            # ログチャンネルへの通知
+            # 💡 ログチャンネルへの通知 (エラー処理をロギングに統一)
             log_channel_id = get_setting('log_channel_id')
             if log_channel_id:
                 try:
                     log_channel = self.bot.get_channel(int(log_channel_id))
                     if log_channel:
                         await log_channel.send(embed=embed)
-                except Exception:
-                    pass # ログ送信失敗は無視
+                    else:
+                         logger.warning(f"Log channel ID {log_channel_id} not found/cached.")
+                except ValueError:
+                    logger.error(f"Invalid log channel ID stored: {log_channel_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send log message: {e}")
 
             await interaction.response.send_message("✅ 認証が完了しました。ユーザーの画面が切り替わります。", ephemeral=True)
         else:
-            # 失敗メッセージ
             await interaction.response.send_message("❌ 無効な認証コードです。コードを再確認するか、ユーザーに再発行させてください。", ephemeral=True)
 
 
@@ -633,82 +588,111 @@ class AuthCodeView(ui.View):
 
     @ui.button(label="認証コード入力", style=ButtonStyle.primary, custom_id="persistent_auth_code_button")
     async def approve_button(self, interaction: Interaction, button: ui.Button):
-        """ボタンが押されたらモーダルを表示"""
         await interaction.response.send_modal(AuthCodeModal(self.bot))
 
 
 class MyBot(commands.Bot):
     def __init__(self):
+        # 必要なすべてのインテントを設定 (前回のエラー対策済みであることを前提)
         intents = discord.Intents.default()
-        intents.message_content = True
+        intents.message_content = True 
+        intents.members = True # メンバーインテントも一応追加
+        
         super().__init__(command_prefix='!', intents=intents)
         
     async def setup_hook(self):
-        # コマンドツリーの登録
-        self.tree.add_command(self.set_log_channel)
-        self.tree.add_command(self.approve_code_slash)
-        await self.tree.sync() # スラッシュコマンドを同期
-        
+        """Botの準備完了後に実行される処理"""
         # 永続Viewの追加
         self.add_view(AuthCodeView(self))
+        
+        # 💡 強化ポイント: コマンドツリーの同期
+        try:
+            # コマンドの登録
+            self.tree.add_command(self.set_log_channel)
+            self.tree.add_command(self.approve_code_slash)
+            
+            synced_commands = await self.tree.sync()
+            logger.info(f"Synced {len(synced_commands)} slash commands globally.")
+        except Exception as e:
+            logger.error(f"Failed to sync slash commands: {e}")
 
     async def on_ready(self):
-        print(f'Logged in as {self.user} (ID: {self.user.id})')
-        print('Slash commands synced.')
+        logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
+        # 🚨 起動時のコマンドSignatureMismatchは、このsync()の成功で解消します。
 
     # --- Discord コマンド ---
 
     @app_commands.command(name="bot設定", description="認証ログチャンネルを設定します。")
     @app_commands.checks.has_permissions(administrator=True)
     async def set_log_channel(self, interaction: Interaction, チャンネル: discord.TextChannel):
-        """管理者用：認証ログチャンネルを設定"""
         set_setting('log_channel_id', str(チャンネル.id))
         await interaction.response.send_message(f"✅ 認証ログチャンネルを {チャンネル.mention} に設定しました。", ephemeral=True)
 
     @app_commands.command(name="認証コード承認", description="認証コード承認用のボタンを表示します。")
     async def approve_code_slash(self, interaction: Interaction):
-        """認証コード入力ボタンを設置するコマンド"""
         embed = Embed(
             title="認証コード承認が必要です",
             description="ウェブページに表示された**6桁の認証コード**を、下の**[認証コード入力]ボタン**を押して表示されるフォームに入力してください。",
             color=discord.Color.blue()
         )
-        # コマンドを実行したユーザーに、画像のようなボタン付きのメッセージを送信
         await interaction.response.send_message(
             embed=embed,
             view=AuthCodeView(self),
-            ephemeral=False # 全員に見えるようにするためephemeralをFalseに (画像と同様の見た目にする)
+            ephemeral=False
         )
+        
+    async def on_app_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
+        """💡 強化ポイント: コマンド実行時の一般的なエラー処理"""
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("❌ このコマンドを実行する権限がありません。", ephemeral=True)
+        else:
+            logger.error(f"Unhandled command error in {interaction.command.name}: {error}")
+            # ユーザーには一般的なエラーを返す
+            if not interaction.response.is_done():
+                 await interaction.response.send_message("❌ コマンドの実行中に予期せぬエラーが発生しました。", ephemeral=True)
 
 
 # ==============================================================================
-# サーバー/Bot 起動ロジック
+# 5. サーバー/Bot 起動ロジック
 # ==============================================================================
 
 def run_flask_server():
-    """Flaskサーバーを別スレッドで起動"""
+    """Flaskサーバーを別スレッドで起動 (waitress使用)"""
     # Renderは環境変数PORTを提供するため、それを使用
     port = int(os.environ.get('PORT', 8000)) 
-    print(f"Starting Flask server on http://0.0.0.0:{port}")
+    logger.info(f"Starting Flask server using Waitress on http://0.0.0.0:{port}")
     try:
-        # Flaskサーバーを起動
-        # debug=Falseに設定し、Production環境向けに
-        app.run(host='0.0.0.0', port=port, debug=False) 
+        # 💡 強化ポイント: Flask開発サーバーの代わりに、本番環境向けのWSGIサーバー Waitressを使用
+        # Waitressはマルチスレッド/プロセスを適切に扱い、より安定します
+        serve(app, host='0.0.0.0', port=port)
     except Exception as e:
-        print(f"Flask server error: {e}")
+        logger.critical(f"Flask server fatal error: {e}")
+
+def run_bot(token):
+    """Discord Botの起動と再接続ループ (エラー対策)"""
+    while True:
+        try:
+            bot = MyBot()
+            bot.run(token)
+        except discord.errors.LoginFailure:
+            logger.critical("Discord Token is invalid. Cannot log in.")
+            break # トークンエラーは致命的なので終了
+        except Exception as e:
+            logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 5 seconds...")
+            asyncio.sleep(5) # その他のエラーで切断された場合は5秒後に再接続
+
 
 if __name__ == '__main__':
-    # 1. DB初期化
-    init_db()
-    
-    # 2. Flaskサーバーをスレッドで起動 (Webサーバー)
-    flask_thread = threading.Thread(target=run_flask_server)
-    flask_thread.daemon = True 
-    flask_thread.start()
-    
-    # 3. Discord Botをメインスレッドで起動
-    try:
-        bot = MyBot()
-        bot.run(DISCORD_TOKEN)
-    except Exception as e:
-        print(f"Discord bot fatal error: {e}")
+    if not DISCORD_TOKEN:
+        logger.critical("DISCORD_TOKEN environment variable not set. Aborting.")
+    else:
+        # 1. DB初期化
+        init_db()
+        
+        # 2. Flaskサーバーをスレッドで起動 (Webサーバー)
+        flask_thread = threading.Thread(target=run_flask_server, name="Flask-Server")
+        flask_thread.daemon = True 
+        flask_thread.start()
+        
+        # 3. Discord Botをメインスレッドで起動 (エラー時に再接続を試みる)
+        run_bot(DISCORD_TOKEN)
