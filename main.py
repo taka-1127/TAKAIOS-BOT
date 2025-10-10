@@ -745,9 +745,12 @@ def run_flask_server():
     except Exception as e:
         logger.critical(f"Flask server fatal error: {e}")
 
+# main.py の 749行目付近
+
 def run_bot(token):
     """Discord Botの起動と再接続ループ (エラー対策)"""
     while True:
+        bot = None
         try:
             bot = MyBot()
             logger.info("Attempting to run Discord bot...")
@@ -758,16 +761,19 @@ def run_bot(token):
             break 
         except discord.errors.HTTPException as e:
              # 429エラーなど、Discord API起因のエラーを捕捉
-            logger.error(f"Discord API Error (Bot crash): {e}. Will retry in 10 seconds.")
-            # 💡 429エラー対策: Botオブジェクトを破棄し、10秒待機
-            if bot:
-                # bot.run()が失敗してループに戻った場合、Botオブジェクトは閉じているが念のため
-                asyncio.run_coroutine_threadsafe(bot.close(), asyncio.get_event_loop()).result(timeout=5)
-            time.sleep(10) # ブロッキングスリープで確実に待機
+            logger.error(f"Discord API Error (Bot crash): {e}. Will retry in 30 seconds to respect rate limit.")
+            
+            # 💡 429エラー対策: Botオブジェクトのクローズはスキップし、長めの待機時間を設ける
+            # Bot.close()の呼び出しは、イベントループがないとエラーになるため削除
+            time.sleep(30) # 30秒待機に延長
+            
         except Exception as e:
-            logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 5 seconds...")
-            # 💡 一般的なクラッシュ: 5秒待機
-            time.sleep(5) # ブロッキングスリープで確実に待機
+            logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 10 seconds...")
+            # 💡 一般的なクラッシュ: 待機時間も10秒に延長
+            time.sleep(10) # ブロッキングスリープで確実に待機
+        finally:
+            # Botオブジェクトが残っていても、ループが再開される際に新しいオブジェクトが作成されるため問題なし
+            pass
 
 
 if __name__ == '__main__':
