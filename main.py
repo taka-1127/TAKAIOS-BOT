@@ -765,7 +765,7 @@ def run_bot(token):
             
             # 💡 429エラー対策: Botオブジェクトのクローズはスキップし、長めの待機時間を設ける
             # Bot.close()の呼び出しは、イベントループがないとエラーになるため削除
-            time.sleep(30) # 30秒待機に延長
+            time.sleep(300) # 300秒待機に延長
             
         except Exception as e:
             logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 10 seconds...")
