@@ -6,7 +6,7 @@ import datetime
 import asyncio
 import threading
 import logging
-from time import sleep as time_sleep
+import time # 💡【重要】 timeモジュールをインポート
 from dotenv import load_dotenv
 
 # Discord
@@ -732,7 +732,7 @@ class MyBot(commands.Bot):
 
 
 # ==============================================================================
-# 5. サーバー/Bot 起動ロジック
+# 5. サーバー/Bot 起動ロジック 💡【最重要修正箇所】
 # ==============================================================================
 
 def run_flask_server():
@@ -750,14 +750,24 @@ def run_bot(token):
     while True:
         try:
             bot = MyBot()
-            # Botが切断された場合、自動で再接続を試みる
-            bot.run(token) 
+            logger.info("Attempting to run Discord bot...")
+            # run()メソッドが失敗（切断/クラッシュ）するまでブロック
+            bot.run(token, reconnect=False) 
         except discord.errors.LoginFailure:
-            logger.critical("Discord Token is invalid. Cannot log in.")
+            logger.critical("Discord Token is invalid. Cannot log in. Aborting.")
             break 
+        except discord.errors.HTTPException as e:
+             # 429エラーなど、Discord API起因のエラーを捕捉
+            logger.error(f"Discord API Error (Bot crash): {e}. Will retry in 10 seconds.")
+            # 💡 429エラー対策: Botオブジェクトを破棄し、10秒待機
+            if bot:
+                # bot.run()が失敗してループに戻った場合、Botオブジェクトは閉じているが念のため
+                asyncio.run_coroutine_threadsafe(bot.close(), asyncio.get_event_loop()).result(timeout=5)
+            time.sleep(10) # ブロッキングスリープで確実に待機
         except Exception as e:
             logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 5 seconds...")
-            asyncio.sleep(5) # 🚨 ここが修正対象
+            # 💡 一般的なクラッシュ: 5秒待機
+            time.sleep(5) # ブロッキングスリープで確実に待機
 
 
 if __name__ == '__main__':
@@ -773,4 +783,5 @@ if __name__ == '__main__':
         flask_thread.start()
         
         # 3. Discord Botをメインスレッドで起動
+        # Botの再接続ロジックのために、メインスレッドに asyncio.get_event_loop() が必要
         run_bot(DISCORD_TOKEN)
