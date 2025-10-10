@@ -15,6 +15,7 @@ from discord.ext import commands
 from discord import app_commands, Embed, Interaction, ui, ButtonStyle
 
 # Flask
+from waitress import serve
 from flask import Flask, request, jsonify, render_template_string
 from waitress import serve 
 
@@ -736,14 +737,16 @@ class MyBot(commands.Bot):
 # ==============================================================================
 
 def run_flask_server():
-    """Flaskサーバーを別スレッドで起動 (waitress使用)"""
+    """Flaskサーバーを別スレッドで起動 (waitressを使用)"""
+    # Renderは環境変数PORTを提供するため、それを使用
     port = int(os.environ.get('PORT', 8000)) 
     logger.info(f"Starting Flask server using Waitress on http://0.0.0.0:{port}")
     try:
-        # Waitressを使用して本番環境向けに起動
-        serve(app, host='0.0.0.0', port=port)
+        # 💡 waitressを使ってサーバーを起動 (Production推奨)
+        # threadsはデフォルトの4で十分です
+        serve(app, host='0.0.0.0', port=port) 
     except Exception as e:
-        logger.critical(f"Flask server fatal error: {e}")
+        logger.error(f"Flask server error: {e}")
 
 # main.py の 749行目付近
 
