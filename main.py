@@ -8,10 +8,12 @@ import threading
 import logging
 from dotenv import load_dotenv
 
+# Discord
 import discord
 from discord.ext import commands
 from discord import app_commands, Embed, Interaction, ui, ButtonStyle
 
+# Flask
 from flask import Flask, request, jsonify, render_template_string
 from waitress import serve 
 
