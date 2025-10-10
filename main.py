@@ -6,6 +6,7 @@ import datetime
 import asyncio
 import threading
 import logging
+from time import sleep as time_sleep
 from dotenv import load_dotenv
 
 # Discord
@@ -756,7 +757,7 @@ def run_bot(token):
             break 
         except Exception as e:
             logger.error(f"Discord bot disconnected or crashed: {e}. Reconnecting in 5 seconds...")
-            asyncio.sleep(5) 
+            asyncio.sleep(5) # 🚨 ここが修正対象
 
 
 if __name__ == '__main__':
